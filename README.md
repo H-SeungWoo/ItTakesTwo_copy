@@ -46,9 +46,46 @@
 
 충돌 시 대상의 `NailTag`를 확인해 박힘 여부를 구분합니다. 수동 회수는 박힌 못 배열에서 대상을 선택하고, 자동 회수는 못의 상태·시간 조건에 따라 시작합니다.
 
-**코드 읽는 순서:** [상태 분기](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L79) → [충돌·박힘 판정](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L97) → [자동 회수](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L180) → [상태 전환 처리](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L276).
+매 프레임 현재 상태에 해당하는 함수만 호출합니다. 발사 이동과 회수 이동을 각 함수에 나눠 두어 상태별 동작을 확인할 수 있습니다.
+
+```cpp
+// Tick의 상태 분기 발췌 · 공백 정리
+switch (State)
+{
+case ENailState::BASIC:      TickBasic(DeltaTime);      break;
+case ENailState::LOAD:       TickLoad(DeltaTime);       break;
+case ENailState::SHOOT:      TickShoot(DeltaTime);      break;
+case ENailState::EMBEDDED:   TickEmbedded(DeltaTime);   break;
+case ENailState::UNEMBEDDED: TickUnembedded(DeltaTime); break;
+case ENailState::RETURNING:  TickReturning(DeltaTime);  break;
+case ENailState::GOTOBAG:    TickGoToBag(DeltaTime);    break;
+}
+```
+
+원본: [HSW_Bullet.cpp · Tick](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L79-L95)
 
 ## 2. 회수 오류 해결 — 돌아온 못의 참조를 등록
+
+### 객체 재사용의 기본 구조
+
+시작할 때 못 3개를 생성해 `Magazine`에 보관합니다. 장전 시에는 `NailPop`으로 하나를 꺼내고, 회수 후 같은 객체를 다시 등록해 재사용합니다.
+
+```cpp
+// BeginPlay 핵심 발췌 · 생성 옵션, Socket 배치, 실패 로그 생략
+for (int32 i = 0; i < 3; i++)
+{
+    // ... FActorSpawnParameters params 설정 ...
+    Nail = GetWorld()->SpawnActor<AHSW_Bullet>(BulletFactory, params);
+    if (Nail)
+    {
+        Nail->SetNailBag(this);
+        Magazine.Add(Nail);
+        // ... 보관함 Socket에 배치 ...
+    }
+}
+```
+
+원본: [HSW_BulletManager.cpp · BeginPlay](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L20-L47)
 
 ### 문제와 원인
 
@@ -64,11 +101,31 @@
 4. 관리자는 `Magazine.Push(currentNail)`로 받은 객체를 등록합니다.
 5. 못은 `BASIC` 상태로 돌아가 배열 순서에 맞는 `NailBag_0`~`NailBag_2` Socket에 배치됩니다.
 
+**① 도착한 못이 자신을 전달합니다.** `RETURNING`에 진입한 즉시 등록하는 것이 아니라, 플레이어와의 거리가 기준값보다 작아졌을 때 등록합니다.
+
 ```cpp
-// 핵심 변경 발췌: 보관할 대상은 함수로 전달받은 못
-// 변경 전: Magazine.Push(Nail);
-Magazine.Push(currentNail);
+// TickReturning 핵심 발췌 · 이동 처리와 카메라 연출 생략
+Distance = (Player->GetActorLocation() - this->GetActorLocation()).Size();
+// ... 플레이어 방향으로 이동 ...
+if (Distance < NailDefaultDist)
+{
+    // ... 카메라 연출 ...
+    NailBag->NailPush(this);
+    SetState(ENailState::BASIC);
+}
 ```
+
+원본: [HSW_Bullet.cpp · TickReturning](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L237-L266)
+
+**② 관리자는 전달받은 참조를 그대로 등록합니다.** 이전에는 `currentNail`을 인자로 받아도 멤버 변수 `Nail`을 넣고 있어, 도착한 못과 등록한 못이 달라질 수 있었습니다.
+
+```diff
+// NailPush 내부의 실제 변경
+- Magazine.Push(Nail);
++ Magazine.Push(currentNail);
+```
+
+원본: [HSW_BulletManager.cpp · NailPush](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L77-L90) · [수정 커밋](https://github.com/H-SeungWoo/ItTakesTwo_copy/commit/0e4f4b98e80164c7ec5dd7419b88c33c3be28693)
 
 **결과:** 회수된 객체와 배열에 등록되는 객체의 불일치를 수정했습니다. 회수 대상을 고르는 `Pop`은 유지하고, 도착 후 등록은 도착한 객체의 참조를 사용하도록 연결했습니다.
 
@@ -89,9 +146,16 @@ Magazine.Push(currentNail);
 `HSW_Hammer.cpp`에서 못과의 겹침을 감지하고, 접근 후 못의 `AttachingPoint` Socket에 망치를 배치합니다. 매달린 동안 누적 시간과 Sin 함수를 이용해 회전 각도를 계산합니다.
 
 ```cpp
+// HammerRotation 핵심 발췌 · 주석 및 공백 정리
 CurrentTime += DeltaTime;
 float Angle = Amplitude * FMath::Sin(CurrentTime * Frequency * 1.5f * PI);
+newRotation = FRotator(0.0f, 110.0f, Angle);
+this->SetActorRelativeRotation(newRotation);
 ```
+
+원본: [HSW_Hammer.cpp · HammerRotation](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Hammer.cpp#L201-L211)
+
+누적 시간에 따라 회전 각도가 양방향으로 반복됩니다. `Amplitude`는 흔들림의 크기를, `Frequency`는 빠르기를 조절하며, 계산한 각도를 실제 액터 회전에 적용합니다.
 
 - `MoveToNail`: 못에 접근하고 매달림 상태로 전환
 - `HammerRotation`: 진폭·주파수에 따른 회전 각도 계산
