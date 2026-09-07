@@ -1,82 +1,133 @@
-# ItTakesTwo
+# It Takes Two 모작 · 공구통 보스전
 
-**일정 : 2024.07.22 ~ 2024. 08.16**
----
-**마일스톤으로 큰단위의 작업을 설정해 주세요**
+**못을 던져 목표물에 박고 회수하는 전투와, 못에 망치를 걸어 이동하는 협동 액션을 Unreal Engine 5로 구현한 팀 프로젝트입니다.**
 
-**마일스톤 컨벤션**
-- 프로토타입, 알파, 베타 순으로 개인으로 마일스톤 작성
+[▶ 실행 영상 보기](https://www.youtube.com/watch?v=Ag4aGCEbZQQ)
 
-**마일스톤 컨벤션 예시**
-  
-- Title : scr_prototype
+| 항목 | 내용 |
+|---|---|
+| 개발 기간 | 2024.07–2024.08 · 메타버스 아카데미 2차 융합 프로젝트 |
+| 팀 규모 | 6명 |
+| 담당 | **한승우 · 클라이언트 개발** — 못 전투·회수·보관, 망치 상호작용 |
+| 개발 범위 | 협동 플랫포머 *It Takes Two*의 공구통 보스전 모작 |
+| 핵심 기술 | Unreal Engine 5.4, C++, Blueprint, FSM, Object Pooling, TArray, Socket |
 
-<br/> 
+## 먼저 볼 구현 3가지
 
-**이슈 작성 후 작업 진행 바랍니다.**
+| 구현 | 살펴볼 내용 | 코드 바로가기 |
+|---|---|---|
+| **못 전투 · FSM** | 장전·발사·박힘·회수 상태에 따라 행동을 분리 | [HSW_Bullet.cpp](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L79) · [상태 선언](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Public/HSW_Bullet.h#L10) |
+| **못 재사용 · 회수 오류 해결** | 3개의 못을 재사용하고, 돌아온 객체와 보관되는 객체를 일치시킴 | [HSW_BulletManager.cpp](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L20) → [NailPush](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L77) |
+| **망치 상호작용 · 진자 움직임** | 못에 접근해 매달리고 Sin 함수로 주기적인 회전 구현 | [HSW_Hammer.cpp](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Hammer.cpp#L122) → [HammerRotation](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Hammer.cpp#L201) |
 
-<br/> 
+## 담당 역할
 
-**이슈 예**
+- C++·Blueprint 기반 못 발사·충돌·회수 시스템 구현
+- 못의 상태를 열거형으로 정의하고 FSM으로 상태 전환 관리
+- 3개의 못 객체를 미리 생성해 재사용하고, 보관 배열과 박힌 못 배열 관리
+- 회수되는 못과 보관 배열에 등록되는 객체가 어긋나는 문제 수정
+- 보관함 Socket에 못을 배치해 보관·장전 상태를 시각적으로 표현
+- 망치가 못에 매달려 주기적으로 흔들리는 상호작용 구현
 
-**[Feat] 블록골램 걷기 구현**
+이 README는 팀의 전체 보스전 구현 중 **한승우의 못·망치 기능**을 중심으로 안내합니다. 입력과 캐릭터 연동을 확인하기 위해 연결한 `CSR_*` 파일은 팀원의 연동 코드이며, 파일 전체를 개인 구현으로 표시하지 않습니다.
 
-### ISSUE
+## 1. 못 전투 — 상태에 따라 역할 분리
 
-- Type: feat
-- Detail: c++ 블록골램에 모션 기능 추가
+핵심 구현은 `HSW_Bullet.cpp`의 `Tick`과 `SetState`에 있습니다. 별도의 FSM 컴포넌트가 아니라 못 액터 안에서 상태별 동작을 분기합니다.
 
-### TODO
+| 주요 상태 | 동작 |
+|---|---|
+| `BASIC` | 보관함 Socket의 위치·회전 반영 |
+| `LOAD` | 장전 상태 처리 |
+| `SHOOT` | 발사 후 이동, 시간 조건에 따른 자동 회수 |
+| `EMBEDDED` | 목표물에 박힌 상태 유지 |
+| `UNEMBEDDED` | 박히지 못한 상태 처리 후 자동 회수 |
+| `RETURNING` | 플레이어 방향으로 복귀하고 도착 조건에서 보관 등록 |
 
-- [ ]  팔 모션 주기
-- [ ]  다리 모션 주기
-- [ ]  실제 물리 공간 이동
+충돌 시 대상의 `NailTag`를 확인해 박힘 여부를 구분합니다. 수동 회수는 박힌 못 배열에서 대상을 선택하고, 자동 회수는 못의 상태·시간 조건에 따라 시작합니다.
 
-<br/> 
+**코드 읽는 순서:** [상태 분기](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L79) → [충돌·박힘 판정](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L97) → [자동 회수](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L180) → [상태 전환 처리](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L276).
 
-**작은 변경사항이라도 꼭 중간마다 커밋, 푸쉬 부탁드립니다.**
+## 2. 회수 오류 해결 — 돌아온 못의 참조를 등록
 
-<br/> 
+### 문제와 원인
 
-**push 전에는 서로 공유 부탁드립니다.**
-<br/> 
+회수 순서가 달라질 때 못이 겹치거나 정상적으로 보관되지 않는 문제가 있었습니다. **회수할 못을 선택하는 일과, 실제 도착한 못을 보관하는 일을 구분해야 했습니다.**
 
-**브렌치명 컨벤션**
-- 브렌치 명 : <자기이니셜>_<기능>
+회수 대상 선택과 도착 등록을 분리한 뒤에도, 등록 함수는 전달받은 `currentNail` 대신 관리자에 저장돼 있던 다른 참조 `Nail`을 배열에 넣고 있었습니다.
 
-**브렌치명 컨벤션 예**
+### 변경한 흐름
 
-- csr_PlayerJump
-- hsu-ClickButtonAndExecSomething
+1. `NailOutPop`으로 수동 회수할 못을 선택하고 해당 못을 `RETURNING` 상태로 전환합니다.
+2. 각 못은 `TickReturning`에서 플레이어와의 거리를 확인합니다.
+3. 도착 거리 조건을 만족하면 `NailBag->NailPush(this)`로 **실제 돌아온 자신의 참조**를 전달합니다.
+4. 관리자는 `Magazine.Push(currentNail)`로 받은 객체를 등록합니다.
+5. 못은 `BASIC` 상태로 돌아가 배열 순서에 맞는 `NailBag_0`~`NailBag_2` Socket에 배치됩니다.
 
-<br/> 
+```cpp
+// 핵심 변경 발췌: 보관할 대상은 함수로 전달받은 못
+// 변경 전: Magazine.Push(Nail);
+Magazine.Push(currentNail);
+```
 
-**커밋 컨벤션**
+**결과:** 회수된 객체와 배열에 등록되는 객체의 불일치를 수정했습니다. 회수 대상을 고르는 `Pop`은 유지하고, 도착 후 등록은 도착한 객체의 참조를 사용하도록 연결했습니다.
 
-- <유형> : <내용> #이슈번호
-- Feat : 새로운 기능을 추가할 경우
-- Fix : 버그를 고친 경우
-- !HOTFIX : 치명적인 버그를 고친 경우
-- Style : Norm 규정, 세미콜론 누락, 코드수정이 없는 경우
-- Refactor : 리팩토링
-- Comment : 주석 추가 및 변경
-- Docs : 문서를 수정한 경우
-- Test : 테스트 추가
-- Rename : 파일 혹은 폴더명을 수정하거나 옮기는 작업만인 경우
-- Remove : 파일을 삭제하는 경우
+| 확인할 지점 | 파일 |
+|---|---|
+| 못 3개 생성·재사용 | [BulletManager::BeginPlay](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L20) |
+| 도착 조건·자기 참조 전달 | [Bullet::TickReturning](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L237) |
+| 전달받은 참조의 실제 등록 | [BulletManager::NailPush](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_BulletManager.cpp#L77) |
+| 보관함 Socket 선택 | [Bullet의 Socket 처리](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/HSW_Bullet.cpp#L371) |
+| 입력에서 수동 회수까지 · 팀 연동 코드 | [CSR_CodyPile.cpp](MTVS_ItTakesTwo/Source/MTVS_ItTakesTwo/Private/CSR_CodyPile.cpp#L251) |
 
-**커밋 컨벤션 예**
+변경 이력: [회수 선택·도착 등록 분리](https://github.com/H-SeungWoo/ItTakesTwo_copy/commit/bd029f032dbd235f7dbefada0f355a94852af9d1) → [등록 참조를 currentNail로 수정](https://github.com/H-SeungWoo/ItTakesTwo_copy/commit/0e4f4b98e80164c7ec5dd7419b88c33c3be28693).
 
-- Feat: tokenizer 구현 - minseok2
-- Fix: tokenizer 문자열 파싱 버그 수정 - junlee2
-- Remove: test.txt 임시파일 삭제 - tyi
-- Rename: test.txt → operator.txt - jincpark
+세 객체를 반복 사용하는 구조이며, FPS나 메모리 절감량을 별도로 측정한 것은 아닙니다.
 
-<br/> 
+## 3. 망치 상호작용 — 주기적인 흔들림 구현
 
-**코드 컨벤션**
+`HSW_Hammer.cpp`에서 못과의 겹침을 감지하고, 접근 후 못의 `AttachingPoint` Socket에 망치를 배치합니다. 매달린 동안 누적 시간과 Sin 함수를 이용해 회전 각도를 계산합니다.
 
-- 파스칼 켄벤션 (int ShootingPlayer)
-- 블루프린트 생성 접두어 BP_
-- 클래스 만들 시 접두어 G
-- 엑터 클래스 만들 시 접두어 A
+```cpp
+CurrentTime += DeltaTime;
+float Angle = Amplitude * FMath::Sin(CurrentTime * Frequency * 1.5f * PI);
+```
+
+- `MoveToNail`: 못에 접근하고 매달림 상태로 전환
+- `HammerRotation`: 진폭·주파수에 따른 회전 각도 계산
+- `GetHammerSocketLocation`: 캐릭터 연결에 사용할 `PlayerAttachingPoint` 위치 제공
+
+실제 중력·장력으로 계산하는 물리 시뮬레이션이 아니라, 게임 상호작용에 필요한 **진자 형태의 주기적 움직임**을 구현했습니다.
+
+## 저장소 구조
+
+```text
+MTVS_ItTakesTwo/
+  MTVS_ItTakesTwo.uproject     # Unreal Engine 5.4
+  Source/MTVS_ItTakesTwo/
+    Private/
+      HSW_Bullet.cpp         # 못 상태·충돌·회수·Socket
+      HSW_BulletManager.cpp  # 못 생성·보관·회수 대상 관리
+      HSW_Hammer.cpp         # 망치 매달림·주기적 회전
+      CSR_*.cpp              # 팀 캐릭터·입력 연동
+    Public/                  # 상태·클래스 선언
+  Content/                   # 맵·Blueprint·모델·애니메이션
+  Config/                    # 엔진·맵·입력·충돌 설정
+```
+
+## 실행 환경과 시연
+
+- 엔진: **Unreal Engine 5.4** (`MTVS_ItTakesTwo.uproject` 기준)
+- Windows C++ 빌드 환경과 프로젝트에 설정된 플러그인이 필요합니다. 플러그인 목록은 [프로젝트 파일](MTVS_ItTakesTwo/MTVS_ItTakesTwo.uproject)에서 확인할 수 있습니다.
+- 전체 저장소와 Content 에셋을 준비한 뒤 프로젝트 파일을 생성하고 `MTVS_ItTakesTwoEditor`를 빌드해 에디터에서 엽니다.
+- 에디터 시작 맵은 `/Game/JBY/AlphaDemo`로 설정돼 있으며 `BetaDemo` 등 다른 맵도 포함됩니다. 패키지 기본 맵은 별도로 설정돼 있어 시작 맵과 같지 않습니다.
+- Blueprint 연결·입력 장치·실행할 맵에 따라 동작 확인이 필요합니다. 현재 환경에서 엔진 빌드와 플레이를 다시 검증하지 않았으므로, 완성 당시 동작은 [실행 영상](https://www.youtube.com/watch?v=Ag4aGCEbZQQ)을 먼저 참고해 주세요.
+
+## 추가 개선 대상으로 남긴 부분
+
+- 보관 배열에 같은 객체를 중복 등록하는 경우와 용량 경계에 대한 방어 조건 보강
+- 고정 Lerp 계수를 사용하는 회수 이동의 프레임 속도 의존성 개선
+
+위 항목은 현재 소스를 읽으며 구분한 후속 개선 대상입니다. 이번 README 정비에서는 게임 코드와 에셋을 변경하지 않았습니다.
+
+본 프로젝트는 *It Takes Two*의 공구통 보스전을 학습 목적으로 모작한 교육 프로젝트이며, 원작의 공식 프로젝트가 아닙니다.
